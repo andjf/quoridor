@@ -1,26 +1,34 @@
 import os
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
+from dataclasses import dataclass
 
 from quoridor.constants import BOARD_SIZE
-from quoridor.engine import (
-    QuoridorBot,
-    QuoridorState,
-)
-from quoridor.model_types import (
-    Move,
-    MoveType,
-    Orientation,
-    Player,
-    Vector,
-)
+from quoridor.engine import QuoridorBot, QuoridorState
+from quoridor.model_types import Move, MoveType, Orientation, Player, Vector
 
 
-class TermColors:
+@dataclass
+class RenderConfig:
+    cell_width: int = 3  # number of chars inside each cell
+    horiz_seg: str = "-"
+    horiz_wall_seg: str = "═"
+    vert_seg: str = "│"
+    vert_wall_seg: str = "║"
+    empty_cell: str = "   "
+    light_mark: str = " L "
+    dark_mark: str = " D "
+    show_coords: bool = True
+    colors: bool = True  # whether to colorize ANSI output
+
+
+# Simple ANSI fallback colors
+class Ansi:
     RESET = "\033[0m"
     BOLD = "\033[1m"
-    RED = "\033[91m"  # Dark Player
-    BLUE = "\033[94m"  # Light Player
-    YELLOW = "\033[93m"  # Walls
-    GREEN = "\033[92m"  # Grid/Coords
+    RED = "\033[91m"
+    BLUE = "\033[94m"
+    YELLOW = "\033[93m"
+    GREEN = "\033[92m"
 
 
 def clear_screen():
@@ -28,34 +36,26 @@ def clear_screen():
 
 
 def parse_coordinate(coord: str) -> tuple[int, int]:
-    """Parses 'e2' into (row_idx, col_idx)."""
     col_char = coord[0].lower()
     row_char = coord[1:]
-
     col = ord(col_char) - ord("a")
-    # Map row '9' (top) to index 0, row '1' (bottom) to index 8
     row = 9 - int(row_char)
     return row, col
 
 
 def format_coordinate(vec: Vector) -> str:
-    """Formats (row, col) back to 'e2'."""
     col_char = chr(vec.y + ord("a"))
     row_char = str(9 - vec.x)
     return f"{col_char}{row_char}"
 
 
 def parse_input(input_str: str) -> Move | None:
-    """Parses 'e2' (move) or 'e2h' (horizontal wall)."""
     input_str = input_str.strip().lower()
     if not input_str:
         return None
-
     try:
-        # Check for wall suffix
         is_wall = False
         orient = None
-
         if input_str.endswith("h"):
             is_wall = True
             orient = Orientation.HORIZONTAL
@@ -66,86 +66,226 @@ def parse_input(input_str: str) -> Move | None:
             coord_part = input_str[:-1]
         else:
             coord_part = input_str
-
         r, c = parse_coordinate(coord_part)
-
-        # Validation of bounds for parsing
-        if not (0 <= r < 9 and 0 <= c < 9):
+        if not (0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE):
             return None
-
         pos = Vector(r, c)
-
         if is_wall:
             return (MoveType.WALL, (pos, orient))
         else:
             return (MoveType.MOVE, pos)
-
     except (ValueError, IndexError):
         return None
 
 
-def render_board(state: QuoridorState):
-    # Header
-    print(f" {TermColors.GREEN}  a   b   c   d   e   f   g   h   i{TermColors.RESET}")
-    print(f" {TermColors.GREEN}+---{'+---' * 8}{TermColors.RESET}")
+def _joint_char(has_up, has_down, has_left, has_right):
+    # box-drawing selection based on neighboring segments
+    if has_up and has_down and has_left and has_right:
+        return "┼"
+    if has_up and has_down and has_left:
+        return "┤"
+    if has_up and has_down and has_right:
+        return "├"
+    if has_left and has_right and has_down:
+        return "┬"
+    if has_left and has_right and has_up:
+        return "┴"
+    if has_down and has_right:
+        return "┌"
+    if has_down and has_left:
+        return "┐"
+    if has_up and has_right:
+        return "└"
+    if has_up and has_left:
+        return "┘"
+    if has_left and has_right:
+        return "-"
+    if has_up and has_down:
+        return "│"
+    if has_left:
+        return "-"
+    if has_right:
+        return "-"
+    if has_up:
+        return "│"
+    if has_down:
+        return "│"
+    return "+"
 
+
+def render_board(state: QuoridorState, cfg: RenderConfig | None) -> None:
+    """
+    Render using a character buffer. Supports optional rich Console.
+    The visual grid dimensions:
+      display_rows = BOARD_SIZE * 2 + 1
+      display_cols = BOARD_SIZE * (cell_width + 1) + 1
+    Joints are at (jr*2, jc*(cell_width + 1))
+    Cell centers at (r*2+1, c*(cell_width+1) + cell_width//2 + 1)
+    """
+    cfg = cfg or RenderConfig()
+
+    rows = BOARD_SIZE * 2 + 1
+    cols = BOARD_SIZE * (cfg.cell_width + 1) + 1
+
+    # initialize buffer with spaces
+    grid = [[" " for _ in range(cols)] for _ in range(rows)]
+
+    # fill default grid (separators)
+    for jr in range(BOARD_SIZE + 1):
+        for jc in range(BOARD_SIZE + 1):
+            r = jr * 2
+            c = jc * (cfg.cell_width + 1)
+            grid[r][c] = "+"  # will be replaced with better joint later
+
+    # fill default horizontal separators (between joints) with '-'
+    for jr in range(0, rows, 2):
+        for jc in range(0, cols):
+            if grid[jr][jc] == " ":
+                grid[jr][jc] = cfg.horiz_seg
+
+    # fill default vertical separators
+    for r in range(rows):
+        for jc in range(0, cols, cfg.cell_width + 1):
+            if grid[r][jc] == " ":
+                grid[r][jc] = cfg.vert_seg
+
+    # fill empty cell interiors
     for r in range(BOARD_SIZE):
-        # Row Content
-        line_top = f"{TermColors.GREEN}{9 - r}|{TermColors.RESET}"
-
         for c in range(BOARD_SIZE):
-            # 1. Determine Cell Content
-            cell_str = "   "
-            if state.light_pos == (r, c):
-                cell_str = f" {TermColors.BLUE}{TermColors.BOLD}L{TermColors.RESET} "
-            elif state.dark_pos == (r, c):
-                cell_str = f" {TermColors.RED}{TermColors.BOLD}D{TermColors.RESET} "
+            center_r = r * 2 + 1
+            start_c = c * (cfg.cell_width + 1) + 1
+            for offset in range(cfg.cell_width):
+                grid[center_r][start_c + offset] = " "
 
-            # 2. Determine Vertical Wall to the right
-            # A vertical wall at (r, c) blocks (r,c) <-> (r, c+1)
-            is_v_wall = ((r, c), Orientation.VERTICAL) in state.walls
-            # Also check if it's the bottom half of a vertical wall starting at r-1
-            is_v_wall_prev = ((r - 1, c), Orientation.VERTICAL) in state.walls
+    # overlay walls from state.walls
+    # Horizontal walls: anchored at (r,c) and cover two segments (c and c+1)
+    for (wr, wc), orient in state.walls:
+        if orient == Orientation.HORIZONTAL:
+            # place wall across two cell-columns: segments at s = wc and s = wc + 1
+            sep_row = (wr + 1) * 2  # between row wr and wr+1
+            for seg in (wc, wc + 1):
+                if 0 <= seg < BOARD_SIZE:
+                    seg_start = seg * (cfg.cell_width + 1) + 1
+                    for x in range(cfg.cell_width):
+                        grid[sep_row][seg_start + x] = cfg.horiz_wall_seg
+        else:  # VERTICAL
+            # vertical walls anchored at (wr,wc) occupy two cell-rows: r and r+1
+            sep_col = (wc + 1) * (cfg.cell_width + 1)
+            for seg in (wr, wr + 1):
+                if 0 <= seg < BOARD_SIZE:
+                    row_center = seg * 2 + 1
+                    grid[row_center][sep_col] = cfg.vert_wall_seg
 
-            separator = (
-                f"{TermColors.YELLOW}┃{TermColors.RESET}"
-                if (is_v_wall or is_v_wall_prev)
-                else f"{TermColors.GREEN}|{TermColors.RESET}"
-            )
+    # compute and set joint characters using neighboring wall segments
+    for jr in range(BOARD_SIZE + 1):
+        for jc in range(BOARD_SIZE + 1):
+            r = jr * 2
+            c = jc * (cfg.cell_width + 1)
+            has_left = False
+            has_right = False
+            has_up = False
+            has_down = False
 
-            line_top += f"{cell_str}{separator}"
+            # left segment exists if char immediately left (if valid) is horiz_wall_seg
+            if c - 1 >= 0 and grid[r][c - 1] == cfg.horiz_wall_seg:
+                has_left = True
+            # right
+            if c + 1 < cols and grid[r][c + 1] == cfg.horiz_wall_seg:
+                has_right = True
+            # up (check one row up)
+            if r - 1 >= 0 and grid[r - 1][c] == cfg.vert_wall_seg:
+                has_up = True
+            # down
+            if r + 1 < rows and grid[r + 1][c] == cfg.vert_wall_seg:
+                has_down = True
 
-        print(line_top + f"{TermColors.GREEN}{9 - r}{TermColors.RESET}")
+            grid[r][c] = _joint_char(has_up, has_down, has_left, has_right)
 
-        # Row Separator (Horizontal Walls)
-        if r < BOARD_SIZE - 1:
-            line_sep = f" {TermColors.GREEN}+{TermColors.RESET}"
-            for c in range(BOARD_SIZE):
-                # A horizontal wall at (r, c) blocks (r,c) <-> (r+1, c)
-                is_h_wall = ((r, c), Orientation.HORIZONTAL) in state.walls
-                # Also check if it's the right half of a horizontal wall starting at c-1
-                is_h_wall_prev = ((r, c - 1), Orientation.HORIZONTAL) in state.walls
+    # place players at centers
+    def place_mark(r: int, c: int, mark: str):
+        cr = r * 2 + 1
+        cc = c * (cfg.cell_width + 1) + (cfg.cell_width // 2) + 1
+        # ensure mark fits into cell_width; if not, truncate/pad
+        mm = mark
+        if len(mm) > cfg.cell_width:
+            mm = mm[: cfg.cell_width]
+        pad = (cfg.cell_width - len(mm)) // 2
+        for i, ch in enumerate(f"{' ' * pad}{mm}{' ' * (cfg.cell_width - pad - len(mm))}"):
+            grid[cr][cc - (cfg.cell_width // 2) + i] = ch
 
-                wall_char = (
-                    f"{TermColors.YELLOW}==={TermColors.RESET}"
-                    if (is_h_wall or is_h_wall_prev)
-                    else f"{TermColors.GREEN}---{TermColors.RESET}"
-                )
-                corner = f"{TermColors.GREEN}+{TermColors.RESET}"
+    # state.light_pos and dark_pos are likely Vector or tuples; handle both
+    lp = state.light_pos
+    dp = state.dark_pos
+    if isinstance(lp, tuple):
+        place_mark(lp[0], lp[1], cfg.light_mark.strip())
+    else:
+        place_mark(lp.x, lp.y, cfg.light_mark.strip())
 
-                line_sep += f"{wall_char}{corner}"
-            print(line_sep)
+    if isinstance(dp, tuple):
+        place_mark(dp[0], dp[1], cfg.dark_mark.strip())
+    else:
+        place_mark(dp.x, dp.y, cfg.dark_mark.strip())
 
-    print(f" {TermColors.GREEN}+---{'+---' * 8}{TermColors.RESET}")
-    print(f" {TermColors.GREEN}  a   b   c   d   e   f   g   h   i{TermColors.RESET}")
-    print(
-        f"\n{TermColors.BLUE}Light Walls: {state.light_walls_left}{TermColors.RESET} | {TermColors.RED}Dark Walls: {state.dark_walls_left}{TermColors.RESET}"
-    )
+    # produce string lines, optionally colorize players/walls using ANSI
+    lines = ["".join(row) for row in grid]
+
+    if cfg.show_coords:
+        # add top/bottom coordinate row
+        coord_row = " " * 2
+        for c in range(BOARD_SIZE):
+            mid = c * (cfg.cell_width + 1) + (cfg.cell_width // 2) + 1
+            # place column letter centered in cell width
+            coord_row = coord_row[:mid] + (" " * max(0, mid - len(coord_row))) + chr(ord("a") + c)
+        # place row numbers on each side
+        # We'll print coord row above the board
+        pass  # we'll add coords in final output below
+
+    # ANSI or plain text
+    out = []
+    if cfg.show_coords:
+        header_cols = []
+        for i in range(BOARD_SIZE):
+            header_cols.append(f"{chr(ord('a') + i):^{cfg.cell_width + 1}}")
+        out.append("  " + "".join(header_cols))
+    for i, line in enumerate(lines):
+        if cfg.show_coords and i % 2 == 1:
+            row_num = str(9 - (i // 2))
+            out.append(f"{row_num} {line} {row_num}")
+        else:
+            if cfg.show_coords:
+                out.append("  " + line)
+            else:
+                out.append(line)
+    if cfg.show_coords:
+        footer_cols = []
+        for i in range(BOARD_SIZE):
+            footer_cols.append(f"{chr(ord('a') + i):^{cfg.cell_width + 1}}")
+        out.append("  " + "".join(footer_cols))
+    # apply simple ANSI colorization if requested
+    if cfg.colors:
+        colored = []
+        for line in out:
+            line = line.replace(cfg.horiz_wall_seg, f"{Ansi.YELLOW}{cfg.horiz_wall_seg}{Ansi.RESET}")
+            line = line.replace(cfg.vert_wall_seg, f"{Ansi.YELLOW}{cfg.vert_wall_seg}{Ansi.RESET}")
+            line = line.replace("L", f"{Ansi.BLUE}{Ansi.BOLD}L{Ansi.RESET}")
+            line = line.replace("D", f"{Ansi.RED}{Ansi.BOLD}D{Ansi.RESET}")
+            colored.append(line)
+        out = colored
+
+    print("\n".join(out))
+
+    print()
+    if cfg.colors:
+        print(
+            f"{Ansi.BLUE}Light Walls: {state.light_walls_left}{Ansi.RESET} | {Ansi.RED}Dark Walls: {state.dark_walls_left}{Ansi.RESET}"
+        )
 
 
-def main():
+def main(depth: int = 2, colors: bool = True):
     game = QuoridorState()
-    bot = QuoridorBot(depth=2)  # Depth 2 is fast for Python; use 3 for harder bot
+    bot = QuoridorBot(depth=depth)
+
+    cfg = RenderConfig(colors=colors)
 
     print("Welcome to Quoridor TUI!")
     print("Instructions:")
@@ -156,7 +296,7 @@ def main():
 
     while True:
         clear_screen()
-        render_board(game)
+        render_board(game, cfg)
 
         winner = game.check_winner()
         if winner:
@@ -164,8 +304,7 @@ def main():
             break
 
         if game.turn == Player.LIGHT:
-            # Human Turn
-            raw = input(f"\n{TermColors.BLUE}Your Move (L) > {TermColors.RESET}")
+            raw = input("\nYour Move (L) > ")
             if raw.lower() in ["q", "quit", "exit"]:
                 break
 
@@ -182,10 +321,8 @@ def main():
                 continue
 
             game = game.apply_move(move)
-
         else:
-            # Bot Turn
-            print(f"\n{TermColors.RED}Dark (Bot) is thinking...{TermColors.RESET}")
+            print("\nDark (Bot) is thinking...")
             best_move = bot.get_best_move(game, Player.DARK)
             if best_move:
                 m_type, data = best_move
@@ -195,12 +332,18 @@ def main():
                     pos, orient = data
                     print(f"Bot places wall at {format_coordinate(pos)}{orient}")
                 game = game.apply_move(best_move)
-                # Small pause to let user see bot's decision if desired
-                # import time; time.sleep(1)
             else:
                 print("Bot has no moves! (This shouldn't happen)")
                 break
 
 
+def get_args() -> Namespace:
+    parser = ArgumentParser(description="Quoridor TUI")
+    parser.add_argument("--colors", action=BooleanOptionalAction, default=True, help="Enable ANSI color output")
+    parser.add_argument("--depth", type=int, default=2, help="Set the bot depth")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = get_args()
+    main(depth=args.depth, colors=args.colors)

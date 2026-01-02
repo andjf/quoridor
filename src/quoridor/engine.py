@@ -5,12 +5,12 @@ from quoridor.constants import (
     INFINITY,
     WIN_SCORE,
 )
-from quoridor.state import QuoridorState
 from quoridor.model_types import (
     Move,
     MoveType,
     Player,
 )
+from quoridor.state import QuoridorState
 
 
 class QuoridorBot:
@@ -39,11 +39,7 @@ class QuoridorBot:
     ) -> tuple[float, Move | None]:
         winner = state.check_winner()
         if winner:
-            return (
-                (WIN_SCORE + depth, None)
-                if winner == player_id
-                else (-WIN_SCORE - depth, None)
-            )
+            return (WIN_SCORE + depth, None) if winner == player_id else (-WIN_SCORE - depth, None)
         if depth == 0:
             return self.evaluate(state, player_id), None
 
