@@ -10,10 +10,10 @@ from quoridor.model_types import Move, MoveType, Orientation, Player, Vector
 @dataclass
 class RenderConfig:
     cell_width: int = 3  # number of chars inside each cell
-    horiz_seg: str = "-"
-    horiz_wall_seg: str = "═"
+    horiz_seg: str = "─"
+    horiz_wall_seg: str = "━"
     vert_seg: str = "│"
-    vert_wall_seg: str = "║"
+    vert_wall_seg: str = "┃"
     empty_cell: str = "   "
     light_mark: str = " L "
     dark_mark: str = " D "
@@ -29,6 +29,7 @@ class Ansi:
     BLUE = "\033[94m"
     YELLOW = "\033[93m"
     GREEN = "\033[92m"
+    GRAY = "\033[90m"
 
 
 def clear_screen():
@@ -77,40 +78,39 @@ def parse_input(input_str: str) -> Move | None:
     except (ValueError, IndexError):
         return None
 
-
-def _joint_char(has_up, has_down, has_left, has_right):
-    # box-drawing selection based on neighboring segments
+def _joint_char(has_up: bool, has_down: bool, has_left: bool, has_right: bool) -> str:
+    if not any([has_up, has_down, has_left, has_right]):
+        return f"{Ansi.GRAY}┼{Ansi.RESET}"
     if has_up and has_down and has_left and has_right:
-        return "┼"
+        return "╋"
     if has_up and has_down and has_left:
-        return "┤"
+        return "┫"
     if has_up and has_down and has_right:
-        return "├"
+        return "┣"
     if has_left and has_right and has_down:
-        return "┬"
+        return "┳"
     if has_left and has_right and has_up:
-        return "┴"
+        return "┻"
     if has_down and has_right:
-        return "┌"
+        return "┏"
     if has_down and has_left:
-        return "┐"
+        return "┓"
     if has_up and has_right:
-        return "└"
+        return "┗"
     if has_up and has_left:
-        return "┘"
+        return "┛"
     if has_left and has_right:
-        return "-"
+        return "━"
     if has_up and has_down:
-        return "│"
+        return "┃"
     if has_left:
-        return "-"
+        return "╸"
     if has_right:
-        return "-"
+        return "╺"
     if has_up:
-        return "│"
+        return "╹"
     if has_down:
-        return "│"
-    return "+"
+        return "╻"
 
 
 def render_board(state: QuoridorState, cfg: RenderConfig | None) -> None:
@@ -141,13 +141,13 @@ def render_board(state: QuoridorState, cfg: RenderConfig | None) -> None:
     for jr in range(0, rows, 2):
         for jc in range(0, cols):
             if grid[jr][jc] == " ":
-                grid[jr][jc] = cfg.horiz_seg
+                grid[jr][jc] = f"{Ansi.GRAY}{cfg.horiz_seg}{Ansi.RESET}"
 
     # fill default vertical separators
     for r in range(rows):
         for jc in range(0, cols, cfg.cell_width + 1):
             if grid[r][jc] == " ":
-                grid[r][jc] = cfg.vert_seg
+                grid[r][jc] = f"{Ansi.GRAY}{cfg.vert_seg}{Ansi.RESET}"
 
     # fill empty cell interiors
     for r in range(BOARD_SIZE):
@@ -246,7 +246,7 @@ def render_board(state: QuoridorState, cfg: RenderConfig | None) -> None:
         header_cols = []
         for i in range(BOARD_SIZE):
             header_cols.append(f"{chr(ord('a') + i):^{cfg.cell_width + 1}}")
-        out.append("  " + "".join(header_cols))
+        out.append("   " + "".join(header_cols))
     for i, line in enumerate(lines):
         if cfg.show_coords and i % 2 == 1:
             row_num = str(9 - (i // 2))
@@ -260,13 +260,13 @@ def render_board(state: QuoridorState, cfg: RenderConfig | None) -> None:
         footer_cols = []
         for i in range(BOARD_SIZE):
             footer_cols.append(f"{chr(ord('a') + i):^{cfg.cell_width + 1}}")
-        out.append("  " + "".join(footer_cols))
+        out.append("   " + "".join(footer_cols))
     # apply simple ANSI colorization if requested
     if cfg.colors:
         colored = []
         for line in out:
-            line = line.replace(cfg.horiz_wall_seg, f"{Ansi.YELLOW}{cfg.horiz_wall_seg}{Ansi.RESET}")
-            line = line.replace(cfg.vert_wall_seg, f"{Ansi.YELLOW}{cfg.vert_wall_seg}{Ansi.RESET}")
+            line = line.replace(cfg.horiz_wall_seg, cfg.horiz_wall_seg)
+            line = line.replace(cfg.vert_wall_seg, cfg.vert_wall_seg)
             line = line.replace("L", f"{Ansi.BLUE}{Ansi.BOLD}L{Ansi.RESET}")
             line = line.replace("D", f"{Ansi.RED}{Ansi.BOLD}D{Ansi.RESET}")
             colored.append(line)
@@ -300,7 +300,7 @@ def main(depth: int = 2, colors: bool = True):
 
         winner = game.check_winner()
         if winner:
-            print(f"\nGAME OVER! {winner.name} wins!")
+            print(f"\n{Ansi.BOLD}GAME OVER!{Ansi.RESET} {Ansi.GREEN}{winner.name} wins!{Ansi.RESET}")
             break
 
         if game.turn == Player.LIGHT:
