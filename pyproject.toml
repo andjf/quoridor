@@ -1,0 +1,39 @@
+[project]
+name = "quoridor"
+version = "0.1.0"
+description = "A high-performance engine for the board game Quoridor"
+readme = "README.md"
+authors = [{ name = "Andrew", email = "andjferrin@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+lint = ["ruff>=0.14.10"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+fix = true
+show-fixes = true
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting (isort)
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+]
+
+ignore = [
+    "E203", # whitespace before ':'
+    "E501", # line length (handled by formatter)
+]
